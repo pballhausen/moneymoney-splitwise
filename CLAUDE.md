@@ -16,7 +16,7 @@ abruft. Neufassung von github.com/slauber/moneymoney-splitwise (2022, MIT). Aufb
   gelaufen: Login per Key in username und password ok, falscher Key → LoginFailed, Konto in
   EUR, Kontonummer "email (id)", eine Position (EUR, Zahl). EZB-XML wird korrekt geparst
   (29 Kurse). Fremdwährungspfad live noch ungetestet (aktuell keine Fremdwährungssalden).
-- Git: `git init` + origin gesetzt, noch kein Commit, GitHub-Repo existiert noch nicht.
+- Git: öffentliches Repo https://github.com/pballhausen/moneymoney-splitwise, `main` gepusht.
 
 ## Offene Punkte
 1. (erledigt) Live-Test gegen die API.
@@ -25,7 +25,7 @@ abruft. Neufassung von github.com/slauber/moneymoney-splitwise (2022, MIT). Aufb
    den MoneyMoney-Container für andere Apps (cp → "Operation not permitted").
    Offen: Darstellung von Fremdwährungspositionen (`amount` + `originalAmount`) prüfen, sobald
    ein Saldo in Fremdwährung existiert.
-3. Erster Commit, Repo auf GitHub anlegen.
+3. (erledigt 18.11.2026) Erster Commit, öffentliches Repo auf GitHub angelegt.
 
 ## Regeln
 - Den API-Key nie committen (`.env` ist ignoriert).
