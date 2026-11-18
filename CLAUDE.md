@@ -1,31 +1,41 @@
 # moneymoney-splitwise — Kontext für Claude Code
 
-MoneyMoney-WebBanking-Extension (Lua), die Splitwise-Salden je Freund und Währung als Depot
-abruft. Neufassung von github.com/slauber/moneymoney-splitwise (2022, MIT). Aufbau analog zu
-../moneymoney-become1.
+MoneyMoney-WebBanking-Extension (Lua), die Splitwise als Konto mit Umsätzen abruft: je Ausgabe
+ein oder zwei Umsätze, Saldo = offene Beträge über alle Freunde. Neufassung von
+github.com/slauber/moneymoney-splitwise (2022, MIT). Aufbau analog zu ../moneymoney-become1.
 
 ## Stand (18.11.2026)
-- `Splitwise.lua` neu geschrieben: Accept-JSON-Fehlerbehandlung, LoginFailed bei 401, klare
-  Meldung bei 403 ohne Splitwise Pro, Beträge als Zahl, Fremdwährungen über
-  originalAmount/currencyOfOriginalAmount + EZB-Kurs, Kontowährung = default_currency,
-  accountNumber im alten Format "email (id)" für Kompatibilität mit bestehenden Konten.
-- API-Key wird aus username ODER password gelesen (erstes Feld, das wie ein Key aussieht, ≥30 Zeichen).
-- Offline-Tests: `lua test/run_tests.lua` (28 Tests, grün).
-- Live-API getestet (18.11.2026): get_current_user und get_friends liefern HTTP 200 — kein
-  403, Pro-Sperre greift beim eigenen Key also nicht. Extension mit curl-Harness end-to-end
-  gelaufen: Login per Key in username und password ok, falscher Key → LoginFailed, Konto in
-  EUR, Kontonummer "email (id)", eine Position (EUR, Zahl). EZB-XML wird korrekt geparst
-  (29 Kurse). Fremdwährungspfad live noch ungetestet (aktuell keine Fremdwährungssalden).
-- Git: öffentliches Repo https://github.com/pballhausen/moneymoney-splitwise, `main` gepusht.
+- Konto (`AccountTypeOther`) statt Depot — Wunsch des Nutzers: in MoneyMoney zählt, wofür das
+  Geld ausgegeben wurde, nicht wem man es schuldet.
+- Umsätze je Ausgabe, Summe immer = eigenes `net_balance` (paid − owed):
+  andere zahlen → ein Umsatz −owed_share (Name = Zahler, Buchungstext = Kategorie);
+  ich zahle → ZWEI Umsätze: −owed_share (Kategorie) und +paid_share ("Zahlung", Name "Du"),
+  Wunsch des Nutzers: Zahlung matcht die Bankabbuchung, Anteil ist kategorisierbare Ausgabe
+  (vorher ein Umsatz +net → wirkte wie Einnahme). Anteil 0 → nur Zahlung.
+  Ausgleichszahlung (payment=true) → ein Umsatz über net_balance.
+- Saldo aus get_friends, Umsätze aus `get_expenses?limit=0` (ganze Historie), Gruppennamen aus
+  get_groups. Buchungstext = Splitwise-Kategorie. Ausgaben < 14 Tage → booked=false gegen
+  Dubletten bei Änderungen. Datum per eigener UTC-Umrechnung (parseIsoUtc).
+- `balance` = Splitwise-Saldo MINUS vorgemerkte Umsätze: MoneyMoney zählt Vorgemerktes selbst
+  dazu. Erste Version lieferte den Gesamtsaldo → Startsaldo im Konto −18 statt 0, alle
+  Tagessalden verschoben (vom Nutzer im Screenshot entdeckt, 18.11.2026).
+- Fremdwährung: Umrechnung per EZB-Tageskurs, Original im Verwendungszweck; ohne Kurs Betrag 0.
+- Fehlerbehandlung: Accept JSON, 401 → LoginFailed, 403 ohne Pro → Klartext.
+  API-Key aus username ODER password (erstes Feld ≥30 Zeichen ohne Leerzeichen).
+  accountNumber weiter "email (id)".
+- Offline-Tests: `lua test/run_tests.lua` (58 Tests, grün).
+- Live (18.11.2026, curl-Harness): 152 Umsätze, Summe −261,16 EUR = Saldo aus get_friends;
+  gebuchte Summe −243,16 = gelieferter balance → Startsaldo 0.
+  Kein 403, Pro-Sperre greift beim eigenen Key nicht. Eigene Ausgaben alle in EUR.
+- Installation in MoneyMoney muss der Nutzer per Finder machen: macOS sperrt den
+  MoneyMoney-Container für andere Apps (cp → "Operation not permitted").
+- Git: öffentliches Repo https://github.com/pballhausen/moneymoney-splitwise.
 
 ## Offene Punkte
-1. (erledigt) Live-Test gegen die API.
-2. (erledigt 18.11.2026) Extension in MoneyMoney installiert, Konto angelegt, Abruf läuft,
-   EUR-Position wird angezeigt. Installation muss der Nutzer per Finder machen: macOS sperrt
-   den MoneyMoney-Container für andere Apps (cp → "Operation not permitted").
-   Offen: Darstellung von Fremdwährungspositionen (`amount` + `originalAmount`) prüfen, sobald
-   ein Saldo in Fremdwährung existiert.
-3. (erledigt 18.11.2026) Erster Commit, öffentliches Repo auf GitHub angelegt.
+1. (erledigt 18.11.2026) Umsatzkonto in MoneyMoney vom Nutzer geprüft: Saldo, Startsaldo und
+   Aufteilung Anteil/Zahlung passen. Hinweis: Änderungen am Umsatzmodell erfordern, das Konto
+   in MoneyMoney zu löschen und neu anzulegen (gebuchte Umsätze bleiben sonst stehen).
+2. Fremdwährungsausgaben live prüfen, sobald es welche mit Beteiligung des Nutzers gibt.
 
 ## Regeln
 - Den API-Key nie committen (`.env` ist ignoriert).

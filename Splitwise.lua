@@ -1,8 +1,14 @@
 -- MoneyMoney WebBanking Extension für Splitwise (https://www.splitwise.com)
 --
--- Ruft die offenen Salden mit allen Splitwise-Freunden ab und zeigt sie als
--- Depot: je Freund und Währung eine Position. Positiv = der Freund schuldet dir
--- etwas, negativ = du schuldest ihm etwas.
+-- Zeigt Splitwise als Konto mit Umsätzen: je Ausgabe ein oder zwei Umsätze mit dem
+-- Datum der Ausgabe. Zusammen verändern sie deinen Splitwise-Saldo so:
+--   * jemand anderes hat bezahlt  → minus dein Anteil
+--   * du hast bezahlt             → minus dein Anteil (Ausgabe) und plus der
+--                                   gezahlte Betrag als "Zahlung" (Gegenstück zur
+--                                   Abbuchung auf dem Bankkonto)
+--   * Ausgleichszahlung           → Zahlbetrag, als Umbuchung
+-- Die Summe aller Umsätze ist dein Splitwise-Saldo (positiv = man schuldet dir
+-- etwas, negativ = du schuldest anderen etwas).
 --
 -- Neufassung auf Basis von https://github.com/slauber/moneymoney-splitwise
 -- (Copyright (c) 2022 Sebastian Lauber, MIT-Lizenz, siehe LICENSE).
@@ -22,8 +28,13 @@ WebBanking{
   version     = 2.0,
   url         = 'https://secure.splitwise.com',
   services    = {'Splitwise'},
-  description = 'Offene Salden mit Splitwise-Freunden als Depot'
+  description = 'Splitwise-Ausgaben als Umsätze, Saldo = offene Beträge mit Freunden'
 }
+
+-- Ausgaben, die jünger sind, kommen als "vorgemerkt" (booked = false). MoneyMoney
+-- ersetzt vorgemerkte Umsätze bei jedem Abruf; spätere Änderungen in Splitwise
+-- erzeugen so keine Dubletten.
+local pendingDays = 14
 
 local apiBase = 'https://secure.splitwise.com/api/v3.0/'
 local ecbUrl  = 'https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml'
@@ -150,6 +161,151 @@ local function convert (amount, from, to)
   return amount * rTo / rFrom
 end
 
+-- "2026-11-16T06:00:05Z" → POSIX-Zeitstempel (UTC), ohne Abhängigkeit von der
+-- lokalen Zeitzone (os.time würde die Felder als Ortszeit lesen).
+local function parseIsoUtc (s)
+  local y, m, d, H, M, S = string.match(s or '', '^(%d+)-(%d+)-(%d+)T(%d+):(%d+):(%d+)')
+  if not y then return nil end
+  y, m, d = tonumber(y), tonumber(m), tonumber(d)
+  -- Tage seit 1970-01-01 (Algorithmus "days_from_civil", H. Hinnant)
+  if m <= 2 then y = y - 1 end
+  local era = math.floor(y / 400)
+  local yoe = y - era * 400
+  local mp  = (m + 9) % 12
+  local doy = math.floor((153 * mp + 2) / 5) + d - 1
+  local doe = yoe * 365 + math.floor(yoe / 4) - math.floor(yoe / 100) + doy
+  local days = era * 146097 + doe - 719468
+  return days * 86400 + tonumber(H) * 3600 + tonumber(M) * 60 + tonumber(S)
+end
+
+-- 1234.5 → "1.234,50"
+local function formatAmount (n)
+  local s = string.format('%.2f', math.abs(n))
+  local int, frac = string.match(s, '^(%d+)%.(%d+)$')
+  int = string.reverse((string.gsub(string.reverse(int), '(%d%d%d)', '%1.')))
+  int = string.gsub(int, '^%.', '')
+  return (n < 0 and '-' or '') .. int .. ',' .. frac
+end
+
+local function joinNames (people)
+  local names = {}
+  for _, p in ipairs(people) do names[#names + 1] = fullName(p) end
+  return table.concat(names, ', ')
+end
+
+-- Gruppennamen für den Verwendungszweck; ein Fehler hier ist nicht fatal.
+local function loadGroupNames ()
+  local names = {}
+  local json = apiGet('get_groups')
+  if json then
+    for _, g in ipairs(json['groups'] or {}) do
+      if g['id'] and g['id'] ~= 0 and g['name'] then names[g['id']] = g['name'] end
+    end
+  end
+  return names
+end
+
+-- Eine Splitwise-Ausgabe in MoneyMoney-Umsätze übersetzen (leere Liste, wenn sie
+-- dich nicht betrifft). Die Summe der Umsätze ist immer dein net_balance:
+--   * Ausgleichszahlung      → ein Umsatz über den Zahlbetrag
+--   * Ausgabe, andere zahlen → ein Umsatz: minus dein Anteil
+--   * Ausgabe, du zahlst     → minus dein Anteil (kategorisierbare Ausgabe) und
+--                              plus dein gezahlter Betrag als "Zahlung" (Gegenstück
+--                              zur Abbuchung auf dem Bankkonto)
+local function expenseToTransactions (expense, myId, accountCurrency, groupNames, now)
+  if expense['deleted_at'] ~= nil then return {} end
+
+  local me
+  local payers, others = {}, {}
+  for _, u in ipairs(expense['users'] or {}) do
+    local person = u['user'] or {}
+    if u['user_id'] == myId then
+      me = u
+    else
+      if (tonumber(u['paid_share']) or 0) > 0 then payers[#payers + 1] = person end
+      if (tonumber(u['owed_share']) or 0) > 0 or (tonumber(u['paid_share']) or 0) > 0 then
+        others[#others + 1] = person
+      end
+    end
+  end
+  if not me then return {} end
+
+  local net     = tonumber(me['net_balance']) or 0
+  local myPaid  = tonumber(me['paid_share']) or 0
+  local myShare = tonumber(me['owed_share']) or 0
+  local currency = expense['currency_code'] or accountCurrency
+  local description = trim(expense['description'] or '')
+  local group = groupNames[expense['group_id']]
+
+  local date = parseIsoUtc(expense['date']) or parseIsoUtc(expense['created_at'])
+  local created = parseIsoUtc(expense['created_at']) or date
+  local recent = math.max(date or 0, created or 0) > now - pendingDays * 86400
+
+  local transactions = {}
+
+  local function add (name, value, bookingText, lines)
+    if math.abs(value) < 0.005 then return end
+    local purpose = {}
+    for _, l in ipairs(lines) do purpose[#purpose + 1] = l end
+    if group then purpose[#purpose + 1] = 'Gruppe: ' .. group end
+
+    local amount = convert(value, currency, accountCurrency)
+    if currency ~= accountCurrency then
+      if amount then
+        amount = math.floor(amount * 100 + 0.5) / 100
+        purpose[#purpose + 1] = string.format('Originalbetrag %s %s, umgerechnet zum EZB-Kurs vom Abruftag',
+          formatAmount(value), currency)
+      else
+        purpose[#purpose + 1] = string.format('Betrag %s %s — kein EZB-Kurs, nicht umgerechnet',
+          formatAmount(value), currency)
+        amount = 0
+      end
+    end
+
+    if name == nil or name == '' then name = 'Splitwise' end
+    transactions[#transactions + 1] = {
+      name        = name,
+      amount      = amount,
+      currency    = accountCurrency,
+      bookingDate = date,
+      valueDate   = date,
+      purpose     = table.concat(purpose, '\n'),
+      bookingText = bookingText,
+      booked      = not recent
+    }
+  end
+
+  if expense['payment'] == true then
+    if net > 0 then
+      local name = joinNames(others)
+      add(name, net, 'Ausgleichszahlung', { 'Zahlung an ' .. name })
+    else
+      local name = joinNames(payers)
+      add(name, net, 'Ausgleichszahlung', { 'Zahlung von ' .. name })
+    end
+    return transactions
+  end
+
+  local category = expense['category'] and expense['category']['name'] or 'Ausgabe'
+  local total = formatAmount(tonumber(expense['cost']) or 0) .. ' ' .. currency
+
+  if myPaid > 0 then
+    local paidBy = #payers > 0 and ('dir und ' .. joinNames(payers)) or 'dir'
+    add('Du', -myShare, category, { description,
+      string.format('Gesamt %s · bezahlt von %s · dein Anteil %s %s',
+        total, paidBy, formatAmount(myShare), currency) })
+    add('Du', myPaid, 'Zahlung', { description,
+      string.format('Von dir bezahlt: %s %s (Gesamt %s) · geteilt mit %s',
+        formatAmount(myPaid), currency, total, joinNames(others)) })
+  else
+    add(joinNames(payers), -myShare, category, { description,
+      string.format('Gesamt %s · bezahlt von %s · dein Anteil %s %s',
+        total, joinNames(payers), formatAmount(myShare), currency) })
+  end
+
+  return transactions
+end
+
 -- ---------------------------------------------------------------------------
 -- MoneyMoney-Schnittstelle
 -- ---------------------------------------------------------------------------
@@ -191,52 +347,54 @@ function ListAccounts (knownAccounts)
       -- Format der alten Extension beibehalten, damit bestehende Konten passen
       accountNumber = string.format('%s (%s)', tostring(currentUser['email'] or ''), tostring(currentUser['id'])),
       currency      = currency,
-      portfolio     = true,
-      type          = AccountTypePortfolio
+      type          = AccountTypeOther
     }
   }
 end
 
 function RefreshAccount (account, since)
-  local json, err = apiGet('get_friends')
-  if not json then return err end
-
   local accountCurrency = account.currency or 'EUR'
-  local securities = {}
 
-  for _, friend in ipairs(json['friends'] or {}) do
-    local balances = {}
+  -- Saldo: Summe der offenen Beträge mit allen Freunden (wie in der App)
+  local friendsJson, err = apiGet('get_friends')
+  if not friendsJson then return err end
+
+  local balance = 0
+  for _, friend in ipairs(friendsJson['friends'] or {}) do
     for _, b in ipairs(friend['balance'] or {}) do
       local value = tonumber(b['amount'])   -- Splitwise liefert Beträge als String
-      if value and math.abs(value) >= 0.005 and b['currency_code'] then
-        balances[#balances + 1] = { currency = b['currency_code'], value = value }
+      if value and b['currency_code'] then
+        balance = balance + (convert(value, b['currency_code'], accountCurrency) or 0)
       end
-    end
-
-    local name = fullName(friend)
-    for _, b in ipairs(balances) do
-      local label = name
-      if #balances > 1 or b.currency ~= accountCurrency then
-        label = name .. ' (' .. b.currency .. ')'
-      end
-
-      -- amount = Wert in Kontowährung, originalAmount = Wert in Originalwährung
-      local security = { name = label }
-
-      if b.currency == accountCurrency then
-        security.amount = b.value
-      else
-        security.originalAmount           = b.value
-        security.currencyOfOriginalAmount = b.currency
-        -- Ohne bekannten Kurs bleibt amount leer, statt einen falschen Wert zu zeigen
-        security.amount = convert(b.value, b.currency, accountCurrency)
-      end
-
-      securities[#securities + 1] = security
     end
   end
 
-  return { securities = securities }
+  -- Umsätze: immer die ganze Historie (limit=0 = alle). MoneyMoney erkennt
+  -- bereits bekannte Umsätze selbst; so bleibt die Summe gleich dem Saldo.
+  local expensesJson
+  expensesJson, err = apiGet('get_expenses?limit=0')
+  if not expensesJson then return err end
+
+  local groupNames = loadGroupNames()
+  local now = os.time()
+  local transactions = {}
+  local pending = 0
+  for _, expense in ipairs(expensesJson['expenses'] or {}) do
+    for _, t in ipairs(expenseToTransactions(expense, currentUser['id'], accountCurrency, groupNames, now)) do
+      transactions[#transactions + 1] = t
+      if not t.booked then pending = pending + t.amount end
+    end
+  end
+
+  -- MoneyMoney versteht "balance" als Saldo der gebuchten Umsätze und zählt
+  -- vorgemerkte selbst dazu (Anzeige "Vorgemerkt"). Ohne diesen Abzug wären
+  -- Start-, Tages- und Endsaldo um die vorgemerkten Beträge verschoben.
+  balance = balance - pending
+
+  return {
+    balance      = math.floor(balance * 100 + 0.5) / 100,
+    transactions = transactions
+  }
 end
 
 function EndSession ()
