@@ -56,7 +56,7 @@ Splitwise-Saldo.
 - Verwendungszweck: Beschreibung, Gesamtbetrag, wer bezahlt hat, dein Anteil, Gruppe.
 - Hast du bezahlt, aber keinen Anteil (Vorschuss für andere), gibt es nur die Zahlung.
 - Gelöschte Ausgaben und Ausgaben ohne dich werden ausgelassen. Abgerufen wird immer die ganze Historie.
-- Ausgaben der letzten 14 Tage kommen als *vorgemerkt*. MoneyMoney ersetzt vorgemerkte Umsätze
+- Ausgaben der letzten 7 Tage kommen als *vorgemerkt*. MoneyMoney ersetzt vorgemerkte Umsätze
   bei jedem Abruf, sodass Änderungen in Splitwise keine Dubletten erzeugen. Wie bei einer
   Bank zeigt MoneyMoney oben den gebuchten Saldo und darunter „Vorgemerkt"; beides zusammen
   ist dein Splitwise-Saldo. Änderst du eine

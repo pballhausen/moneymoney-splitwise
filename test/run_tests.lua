@@ -51,9 +51,10 @@ local fixtures = {
 
   expenses = {
     expenses = {
-      -- 1: Anna hat bezahlt, du schuldest deinen Anteil
+      -- 1: Anna hat bezahlt, du schuldest deinen Anteil; vor 10 Tagen nachgetragen
+      -- (älter als die 7-Tage-Vormerkfrist → gebucht)
       { id = 101, description = 'Olivenöl', cost = '72.0', currency_code = 'EUR',
-        date = '2025-03-10T18:30:00Z', created_at = '2025-03-10T18:31:00Z',
+        date = '2025-03-10T18:30:00Z', created_at = isoDaysAgo(10),
         payment = false, group_id = 55, category = { name = 'Lebensmittel' },
         users = { share(1, anna, '72.0', '18.0'), share(ME, self, '0.0', '18.0'),
                   share(2, ben, '0.0', '36.0') } },
@@ -239,6 +240,8 @@ for _, t in ipairs(result.transactions) do
   if not t.booked then pendingSum = pendingSum + t.amount end
 end
 check('gebucht + vorgemerkt = Splitwise-Gesamtsaldo', round(result.balance + pendingSum), 23.77)
+check('pendingBalance = Summe der vorgemerkten Umsätze', result.pendingBalance, round(pendingSum))
+check('pendingBalance = vorgemerktes Taxi', result.pendingBalance, -10)
 check('ganze Historie abgefragt', contains(requests[#requests - 1].url, 'get_expenses?limit=0')
   or contains(requests[#requests].url, 'get_expenses?limit=0'), true)
 
@@ -253,7 +256,7 @@ check('Kategorie als Buchungstext', oil and oil.bookingText, 'Lebensmittel')
 check('Verwendungszweck: Gesamt/Anteil', contains(oil and oil.purpose,
   'Gesamt 72,00 EUR · bezahlt von Anna Alpha · dein Anteil 18,00 EUR'), true)
 check('Verwendungszweck: Gruppe', contains(oil and oil.purpose, 'Gruppe: Sizilien'), true)
-check('alte Ausgabe gebucht', oil and oil.booked, true)
+check('vor 10 Tagen angelegt: gebucht (Frist 7 Tage)', oil and oil.booked, true)
 check('Umsatzwährung = Kontowährung', oil and oil.currency, 'EUR')
 check('andere zahlen: keine Zahlung', byPurpose(tx, 'Olivenöl', 'Zahlung'), nil)
 

@@ -14,16 +14,19 @@ github.com/slauber/moneymoney-splitwise (2022, MIT). Aufbau analog zu ../moneymo
   (vorher ein Umsatz +net → wirkte wie Einnahme). Anteil 0 → nur Zahlung.
   Ausgleichszahlung (payment=true) → ein Umsatz über net_balance.
 - Saldo aus get_friends, Umsätze aus `get_expenses?limit=0` (ganze Historie), Gruppennamen aus
-  get_groups. Buchungstext = Splitwise-Kategorie. Ausgaben < 14 Tage → booked=false gegen
+  get_groups. Buchungstext = Splitwise-Kategorie. Ausgaben < 7 Tage (bis 22.11.2026: 14) → booked=false gegen
   Dubletten bei Änderungen. Datum per eigener UTC-Umrechnung (parseIsoUtc).
 - `balance` = Splitwise-Saldo MINUS vorgemerkte Umsätze: MoneyMoney zählt Vorgemerktes selbst
   dazu. Erste Version lieferte den Gesamtsaldo → Startsaldo im Konto −18 statt 0, alle
   Tagessalden verschoben (vom Nutzer im Screenshot entdeckt, 18.11.2026).
+- Zusätzlich `pendingBalance` = Summe der vorgemerkten Umsätze (22.11.2026), damit die
+  Seitenleiste den Gesamtsaldo zeigen kann. Ob MoneyMoney das Feld dort einrechnet, ist
+  laut API-Doku offen → offener Punkt 3.
 - Fremdwährung: Umrechnung per EZB-Tageskurs, Original im Verwendungszweck; ohne Kurs Betrag 0.
 - Fehlerbehandlung: Accept JSON, 401 → LoginFailed, 403 ohne Pro → Klartext.
   API-Key aus username ODER password (erstes Feld ≥30 Zeichen ohne Leerzeichen).
   accountNumber weiter "email (id)".
-- Offline-Tests: `lua test/run_tests.lua` (58 Tests, grün).
+- Offline-Tests: `lua test/run_tests.lua` (60 Tests, grün).
 - Live (18.11.2026, curl-Harness): 152 Umsätze, Summe −261,16 EUR = Saldo aus get_friends;
   gebuchte Summe −243,16 = gelieferter balance → Startsaldo 0.
   Kein 403, Pro-Sperre greift beim eigenen Key nicht. Eigene Ausgaben alle in EUR.
@@ -36,6 +39,9 @@ github.com/slauber/moneymoney-splitwise (2022, MIT). Aufbau analog zu ../moneymo
    Aufteilung Anteil/Zahlung passen. Hinweis: Änderungen am Umsatzmodell erfordern, das Konto
    in MoneyMoney zu löschen und neu anzulegen (gebuchte Umsätze bleiben sonst stehen).
 2. Fremdwährungsausgaben live prüfen, sobald es welche mit Beteiligung des Nutzers gibt.
+3. In MoneyMoney prüfen, ob die Seitenleiste mit `pendingBalance` den Saldo inkl.
+   Vorgemerktem zeigt. Falls nicht: Feld schadet nicht, Alternativen (alles gebucht melden /
+   vollen Saldo als balance) haben Dubletten bzw. falschen Startsaldo zur Folge.
 
 ## Regeln
 - Den API-Key nie committen (`.env` ist ignoriert).

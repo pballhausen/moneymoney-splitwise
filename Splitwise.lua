@@ -34,7 +34,7 @@ WebBanking{
 -- Ausgaben, die jünger sind, kommen als "vorgemerkt" (booked = false). MoneyMoney
 -- ersetzt vorgemerkte Umsätze bei jedem Abruf; spätere Änderungen in Splitwise
 -- erzeugen so keine Dubletten.
-local pendingDays = 14
+local pendingDays = 7
 
 local apiBase = 'https://secure.splitwise.com/api/v3.0/'
 local ecbUrl  = 'https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml'
@@ -391,9 +391,12 @@ function RefreshAccount (account, since)
   -- Start-, Tages- und Endsaldo um die vorgemerkten Beträge verschoben.
   balance = balance - pending
 
+  -- pendingBalance (API-Feld "Summe der vorgemerkten Umsätze") meldet die
+  -- vorgemerkten Beträge zusätzlich, damit MoneyMoney sie im Kontostand zeigen kann.
   return {
-    balance      = math.floor(balance * 100 + 0.5) / 100,
-    transactions = transactions
+    balance        = math.floor(balance * 100 + 0.5) / 100,
+    pendingBalance = math.floor(pending * 100 + 0.5) / 100,
+    transactions   = transactions
   }
 end
 
