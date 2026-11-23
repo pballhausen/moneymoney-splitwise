@@ -4,7 +4,7 @@ MoneyMoney-WebBanking-Extension (Lua), die Splitwise als Konto mit Umsätzen abr
 ein oder zwei Umsätze, Saldo = offene Beträge über alle Freunde. Neufassung von
 github.com/slauber/moneymoney-splitwise (2022, MIT). Aufbau analog zu ../moneymoney-become1.
 
-## Stand (18.11.2026)
+## Stand (22.11.2026)
 - Konto (`AccountTypeOther`) statt Depot — Wunsch des Nutzers: in MoneyMoney zählt, wofür das
   Geld ausgegeben wurde, nicht wem man es schuldet.
 - Umsätze je Ausgabe, Summe immer = eigenes `net_balance` (paid − owed):
@@ -14,21 +14,32 @@ github.com/slauber/moneymoney-splitwise (2022, MIT). Aufbau analog zu ../moneymo
   (vorher ein Umsatz +net → wirkte wie Einnahme). Anteil 0 → nur Zahlung.
   Ausgleichszahlung (payment=true) → ein Umsatz über net_balance.
 - Saldo aus get_friends, Umsätze aus `get_expenses?limit=0` (ganze Historie), Gruppennamen aus
-  get_groups. Buchungstext = Splitwise-Kategorie. Ausgaben < 7 Tage (bis 22.11.2026: 14) → booked=false gegen
-  Dubletten bei Änderungen. Datum per eigener UTC-Umrechnung (parseIsoUtc).
-- `balance` = Splitwise-Saldo MINUS vorgemerkte Umsätze: MoneyMoney zählt Vorgemerktes selbst
-  dazu. Erste Version lieferte den Gesamtsaldo → Startsaldo im Konto −18 statt 0, alle
-  Tagessalden verschoben (vom Nutzer im Screenshot entdeckt, 18.11.2026).
-- Zusätzlich `pendingBalance` = Summe der vorgemerkten Umsätze (22.11.2026), damit die
-  Seitenleiste den Gesamtsaldo zeigen kann. Ob MoneyMoney das Feld dort einrechnet, ist
-  laut API-Doku offen → offener Punkt 3.
-- Fremdwährung: Umrechnung per EZB-Tageskurs, Original im Verwendungszweck; ohne Kurs Betrag 0.
+  get_groups. Buchungstext = Splitwise-Kategorie. Datum per eigener UTC-Umrechnung (parseIsoUtc).
+- ALLES sofort gebucht (seit 22.11.2026), balance = voller Splitwise-Saldo. Grund: Nutzer will
+  den Gesamtsaldo in der Seitenleiste; die zeigt nur den gebuchten Saldo. Gescheitert (vom
+  Nutzer in MoneyMoney geprüft): pendingBalance als Summe der vorgemerkten, pendingBalance als
+  Gesamtsaldo (wie Become1), Kontotyp Kreditkarte (wie Become1). Vorher: Ausgaben < 14/7 Tage
+  vorgemerkt, balance = Saldo minus Vorgemerktes (sonst Startsaldo falsch).
+- Änderungen → Korrekturbuchungen: transactionId "sw:<expenseId>:<anteil|zahlung|ausgleich>",
+  Korrekturen ":k<n>". Gebuchter Stand je Ausgabe/Rolle in LocalStorage.expenses (Wert in
+  Ausgabewährung, Betrag in Kontowährung, Anzahl Korrekturen, Name/Kategorie). Abgleich über
+  isKnownTransactionId (3. Parameter von RefreshAccount): unbekannt → als neu liefern (Konto neu
+  angelegt); LocalStorage leer → Stand aus Original + Korrekturen rekonstruieren. Gelöscht
+  (deleted_at, kommt in get_expenses mit) → Storno; Rolle entfällt → Korrektur auf 0. Ausgaben,
+  die ganz aus der Antwort fehlen, bleiben unangetastet (Schutz vor API-Aussetzern).
+  MoneyMoney-Dublettenerkennung läuft nur über Buchungstag, Betrag, Name, Zweck — deshalb
+  "Korrektur <n>" im Zweck. Nur Text/Kategorie/Datum geändert → keine Korrektur.
+- Kursänderungen erzeugen keine Korrektur (Vergleich in Ausgabewährung); balance aus get_friends
+  nutzt den Tageskurs → bei Fremdwährung leichte Abweichung Saldo/Umsatzsumme möglich.
+- Fremdwährung: Umrechnung per EZB-Kurs vom Tag der ersten Buchung, Original im
+  Verwendungszweck; ohne Kurs Betrag 0.
 - Fehlerbehandlung: Accept JSON, 401 → LoginFailed, 403 ohne Pro → Klartext.
   API-Key aus username ODER password (erstes Feld ≥30 Zeichen ohne Leerzeichen).
   accountNumber weiter "email (id)".
-- Offline-Tests: `lua test/run_tests.lua` (60 Tests, grün).
-- Live (18.11.2026, curl-Harness): 152 Umsätze, Summe −261,16 EUR = Saldo aus get_friends;
-  gebuchte Summe −243,16 = gelieferter balance → Startsaldo 0.
+- Offline-Tests: `lua test/run_tests.lua` (95 Tests, grün, inkl. Korrekturen/Storno/Rekonstruktion).
+- Live (22.11.2026, curl-Harness): 159 Umsätze, Summe −337,06 EUR = balance → Startsaldo 0;
+  zweiter Abruf und Abruf mit leerem LocalStorage liefern 0 Umsätze. 183 Ausgaben, davon 3
+  gelöscht, 32 nachträglich geändert (updated_at > created_at).
   Kein 403, Pro-Sperre greift beim eigenen Key nicht. Eigene Ausgaben alle in EUR.
 - Installation in MoneyMoney muss der Nutzer per Finder machen: macOS sperrt den
   MoneyMoney-Container für andere Apps (cp → "Operation not permitted").
@@ -39,9 +50,9 @@ github.com/slauber/moneymoney-splitwise (2022, MIT). Aufbau analog zu ../moneymo
    Aufteilung Anteil/Zahlung passen. Hinweis: Änderungen am Umsatzmodell erfordern, das Konto
    in MoneyMoney zu löschen und neu anzulegen (gebuchte Umsätze bleiben sonst stehen).
 2. Fremdwährungsausgaben live prüfen, sobald es welche mit Beteiligung des Nutzers gibt.
-3. In MoneyMoney prüfen, ob die Seitenleiste mit `pendingBalance` den Saldo inkl.
-   Vorgemerktem zeigt. Falls nicht: Feld schadet nicht, Alternativen (alles gebucht melden /
-   vollen Saldo als balance) haben Dubletten bzw. falschen Startsaldo zur Folge.
+3. Neues Modell (alles gebucht + Korrekturen) in MoneyMoney prüfen: Konto löschen und neu
+   anlegen (Typ wieder Sonstiges), Seitenleiste = Splitwise-Saldo, Startsaldo 0; nach einer
+   Änderung in Splitwise erscheint genau eine Korrekturbuchung.
 
 ## Regeln
 - Den API-Key nie committen (`.env` ist ignoriert).

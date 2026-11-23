@@ -55,15 +55,21 @@ Splitwise-Saldo.
   „Ausgleichszahlung"; damit lassen sich in MoneyMoney Kategorieregeln anlegen.
 - Verwendungszweck: Beschreibung, Gesamtbetrag, wer bezahlt hat, dein Anteil, Gruppe.
 - Hast du bezahlt, aber keinen Anteil (Vorschuss für andere), gibt es nur die Zahlung.
-- Gelöschte Ausgaben und Ausgaben ohne dich werden ausgelassen. Abgerufen wird immer die ganze Historie.
-- Ausgaben der letzten 7 Tage kommen als *vorgemerkt*. MoneyMoney ersetzt vorgemerkte Umsätze
-  bei jedem Abruf, sodass Änderungen in Splitwise keine Dubletten erzeugen. Wie bei einer
-  Bank zeigt MoneyMoney oben den gebuchten Saldo und darunter „Vorgemerkt"; beides zusammen
-  ist dein Splitwise-Saldo. Änderst du eine
-  ältere Ausgabe, erscheint sie neu und die alte Fassung muss in MoneyMoney von Hand gelöscht
-  werden (MoneyMoney kennt keine Umsatz-IDs für Extensions).
-- Fremdwährungen werden mit dem EZB-Referenzkurs vom Abruftag in die Kontowährung
-  umgerechnet; der Originalbetrag steht im Verwendungszweck. Ohne EZB-Kurs (exotische Währung)
+- Ausgaben ohne dich werden ausgelassen. Abgerufen wird immer die ganze Historie.
+- Alle Umsätze kommen sofort als *gebucht*; die Seitenleiste zeigt so deinen vollen
+  Splitwise-Saldo. MoneyMoney kann gebuchte Umsätze nicht nachträglich ändern. Änderst du eine
+  Ausgabe in Splitwise, liefert die Extension deshalb eine **Korrekturbuchung** über die
+  Differenz (gleicher Name, gleiche Kategorie, im Verwendungszweck „Korrektur: …, vorher …,
+  jetzt …"). Löschst du eine Ausgabe, kommt ein **Storno** über den alten Betrag. Die Summe
+  aller Umsätze bleibt so immer dein Splitwise-Saldo.
+- Ändern sich nur Text, Kategorie oder Datum einer Ausgabe, bleibt der Umsatz in MoneyMoney
+  unverändert (der Saldo ist davon nicht betroffen).
+- Was schon gebucht ist, merkt sich die Extension je Bankzugang (`LocalStorage`) und prüft es
+  über die Umsatzkennung (`sw:<Ausgabe>:<anteil|zahlung|ausgleich>`) bei MoneyMoney nach.
+- Fremdwährungen werden mit dem EZB-Referenzkurs vom Tag der ersten Buchung in die
+  Kontowährung umgerechnet; der Originalbetrag steht im Verwendungszweck. Spätere
+  Kursänderungen erzeugen keine Korrekturen (der Saldo aus Splitwise rechnet dagegen mit dem
+  Tageskurs, bei Fremdwährungen können Saldo und Summe der Umsätze daher leicht abweichen). Ohne EZB-Kurs (exotische Währung)
   ist der Betrag 0 mit Hinweis im Verwendungszweck.
 
 ## Installation

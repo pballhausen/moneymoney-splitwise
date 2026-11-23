@@ -31,10 +31,11 @@ WebBanking{
   description = 'Splitwise-Ausgaben als Umsätze, Saldo = offene Beträge mit Freunden'
 }
 
--- Ausgaben, die jünger sind, kommen als "vorgemerkt" (booked = false). MoneyMoney
--- ersetzt vorgemerkte Umsätze bei jedem Abruf; spätere Änderungen in Splitwise
--- erzeugen so keine Dubletten.
-local pendingDays = 7
+-- Alle Umsätze kommen sofort als gebucht. MoneyMoney kann gebuchte Umsätze nicht
+-- nachträglich ändern; ändert sich eine Ausgabe in Splitwise, liefert die Extension
+-- deshalb eine Korrekturbuchung über die Differenz (gelöscht → Storno). Was schon in
+-- MoneyMoney steht, merkt sie sich in LocalStorage und prüft es über
+-- isKnownTransactionId nach (Kennung je Umsatz: "sw:<Ausgabe>:<Rolle>").
 
 local apiBase = 'https://secure.splitwise.com/api/v3.0/'
 local ecbUrl  = 'https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml'
@@ -212,8 +213,11 @@ end
 --   * Ausgabe, du zahlst     → minus dein Anteil (kategorisierbare Ausgabe) und
 --                              plus dein gezahlter Betrag als "Zahlung" (Gegenstück
 --                              zur Abbuchung auf dem Bankkonto)
-local function expenseToTransactions (expense, myId, accountCurrency, groupNames, now)
-  if expense['deleted_at'] ~= nil then return {} end
+--
+-- Rückgabe: Liste von { role, value (Betrag in Ausgabewährung), currency, tx }.
+-- role ist "anteil", "zahlung" oder "ausgleich" und bildet mit der Ausgaben-ID die
+-- feste Kennung des Umsatzes.
+local function expenseToTransactions (expense, myId, accountCurrency, groupNames)
 
   local me
   local payers, others = {}, {}
@@ -238,12 +242,10 @@ local function expenseToTransactions (expense, myId, accountCurrency, groupNames
   local group = groupNames[expense['group_id']]
 
   local date = parseIsoUtc(expense['date']) or parseIsoUtc(expense['created_at'])
-  local created = parseIsoUtc(expense['created_at']) or date
-  local recent = math.max(date or 0, created or 0) > now - pendingDays * 86400
 
   local transactions = {}
 
-  local function add (name, value, bookingText, lines)
+  local function add (role, name, value, bookingText, lines)
     if math.abs(value) < 0.005 then return end
     local purpose = {}
     for _, l in ipairs(lines) do purpose[#purpose + 1] = l end
@@ -264,24 +266,29 @@ local function expenseToTransactions (expense, myId, accountCurrency, groupNames
 
     if name == nil or name == '' then name = 'Splitwise' end
     transactions[#transactions + 1] = {
-      name        = name,
-      amount      = amount,
-      currency    = accountCurrency,
-      bookingDate = date,
-      valueDate   = date,
-      purpose     = table.concat(purpose, '\n'),
-      bookingText = bookingText,
-      booked      = not recent
+      role     = role,
+      value    = value,
+      currency = currency,
+      tx = {
+        name        = name,
+        amount      = amount,
+        currency    = accountCurrency,
+        bookingDate = date,
+        valueDate   = date,
+        purpose     = table.concat(purpose, '\n'),
+        bookingText = bookingText,
+        booked      = true
+      }
     }
   end
 
   if expense['payment'] == true then
     if net > 0 then
       local name = joinNames(others)
-      add(name, net, 'Ausgleichszahlung', { 'Zahlung an ' .. name })
+      add('ausgleich', name, net, 'Ausgleichszahlung', { 'Zahlung an ' .. name })
     else
       local name = joinNames(payers)
-      add(name, net, 'Ausgleichszahlung', { 'Zahlung von ' .. name })
+      add('ausgleich', name, net, 'Ausgleichszahlung', { 'Zahlung von ' .. name })
     end
     return transactions
   end
@@ -291,14 +298,14 @@ local function expenseToTransactions (expense, myId, accountCurrency, groupNames
 
   if myPaid > 0 then
     local paidBy = #payers > 0 and ('dir und ' .. joinNames(payers)) or 'dir'
-    add('Du', -myShare, category, { description,
+    add('anteil', 'Du', -myShare, category, { description,
       string.format('Gesamt %s · bezahlt von %s · dein Anteil %s %s',
         total, paidBy, formatAmount(myShare), currency) })
-    add('Du', myPaid, 'Zahlung', { description,
+    add('zahlung', 'Du', myPaid, 'Zahlung', { description,
       string.format('Von dir bezahlt: %s %s (Gesamt %s) · geteilt mit %s',
         formatAmount(myPaid), currency, total, joinNames(others)) })
   else
-    add(joinNames(payers), -myShare, category, { description,
+    add('anteil', joinNames(payers), -myShare, category, { description,
       string.format('Gesamt %s · bezahlt von %s · dein Anteil %s %s',
         total, joinNames(payers), formatAmount(myShare), currency) })
   end
@@ -352,8 +359,92 @@ function ListAccounts (knownAccounts)
   }
 end
 
-function RefreshAccount (account, since)
+local roles = { 'anteil', 'zahlung', 'ausgleich' }
+
+local function round2 (n)
+  return math.floor(n * 100 + 0.5) / 100
+end
+
+-- 1709208000 → "29.02.2024"
+local function formatDate (ts)
+  return os.date('!%d.%m.%Y', ts or 0)
+end
+
+-- Gemerkter Stand je Ausgabe und Rolle: was MoneyMoney bereits gebucht hat.
+--   value       Summe in Ausgabewährung (Original + Korrekturen)
+--   amount      dieselbe Summe in Kontowährung (so wie gebucht)
+--   corrections Anzahl gelieferter Korrekturbuchungen (für deren Kennung)
+--   name, bookingText, title, date  für Korrekturen, falls die Rolle wegfällt
+local function loadState ()
+  if type(LocalStorage) ~= 'table' then return {} end
+  if type(LocalStorage.expenses) ~= 'table' then LocalStorage.expenses = {} end
+  return LocalStorage.expenses
+end
+
+-- Stand aus MoneyMoney rekonstruieren, wenn LocalStorage leer ist (z.B. nach neu
+-- eingerichtetem Bankzugang): Original und Korrekturen über ihre Kennung abfragen.
+local function recoverFromMoneyMoney (known, key, original, target, accountCurrency)
+  local amount, n = original.amount or 0, 0
+  while true do
+    local c = known(key .. ':k' .. (n + 1))
+    if not c then break end
+    amount = amount + (c.amount or 0)
+    n = n + 1
+  end
+  local currency = target and target.currency or accountCurrency
+  local value = amount
+  if currency ~= accountCurrency then
+    value = convert(amount, accountCurrency, currency) or (target and target.value) or 0
+  end
+  return {
+    value       = value,
+    currency    = currency,
+    amount      = amount,
+    corrections = n,
+    name        = original.name,
+    bookingText = target and target.tx.bookingText or nil,
+    title       = nil,
+    date        = original.bookingDate
+  }
+end
+
+-- Korrekturbuchung über die Differenz zwischen gebuchtem Stand und Splitwise.
+local function correction (key, prev, target, newValue, deltaAmount, expense, deleted)
+  local n = (prev.corrections or 0) + 1
+  local when = deleted and parseIsoUtc(expense['deleted_at'])
+            or parseIsoUtc(expense['updated_at']) or os.time()
+  local title = trim(expense['description'] or '') ~= '' and trim(expense['description']) or prev.title or 'Ausgabe'
+  local currency = target and target.currency or prev.currency
+
+  local lines
+  if deleted then
+    lines = { 'Storno: ' .. title,
+      string.format('In Splitwise gelöscht · Ausgabe vom %s über %s %s',
+        formatDate(prev.date), formatAmount(prev.value), prev.currency) }
+  else
+    lines = { 'Korrektur: ' .. title,
+      string.format('In Splitwise geändert · Ausgabe vom %s · vorher %s %s, jetzt %s %s',
+        formatDate(target and target.tx.bookingDate or prev.date),
+        formatAmount(prev.value), prev.currency, formatAmount(newValue), currency) }
+  end
+  lines[#lines + 1] = 'Korrektur ' .. n
+
+  return {
+    name          = target and target.tx.name or prev.name or 'Splitwise',
+    amount        = round2(deltaAmount),
+    currency      = nil,  -- wird vom Aufrufer gesetzt
+    bookingDate   = when,
+    valueDate     = when,
+    purpose       = table.concat(lines, '\n'),
+    bookingText   = target and target.tx.bookingText or prev.bookingText,
+    booked        = true,
+    transactionId = key .. ':k' .. n
+  }, n
+end
+
+function RefreshAccount (account, since, isKnownTransactionId)
   local accountCurrency = account.currency or 'EUR'
+  local known = type(isKnownTransactionId) == 'function' and isKnownTransactionId or nil
 
   -- Saldo: Summe der offenen Beträge mit allen Freunden (wie in der App)
   local friendsJson, err = apiGet('get_friends')
@@ -369,34 +460,100 @@ function RefreshAccount (account, since)
     end
   end
 
-  -- Umsätze: immer die ganze Historie (limit=0 = alle). MoneyMoney erkennt
-  -- bereits bekannte Umsätze selbst; so bleibt die Summe gleich dem Saldo.
+  -- Ausgaben: immer die ganze Historie (limit=0 = alle), inklusive gelöschter
+  -- (deleted_at gesetzt) — nur so lassen sich Löschungen stornieren.
   local expensesJson
   expensesJson, err = apiGet('get_expenses?limit=0')
   if not expensesJson then return err end
 
   local groupNames = loadGroupNames()
-  local now = os.time()
+  local state = loadState()
   local transactions = {}
-  local pending = 0
+
   for _, expense in ipairs(expensesJson['expenses'] or {}) do
-    for _, t in ipairs(expenseToTransactions(expense, currentUser['id'], accountCurrency, groupNames, now)) do
-      transactions[#transactions + 1] = t
-      if not t.booked then pending = pending + t.amount end
+    local expId = tostring(expense['id'])
+    local deleted = expense['deleted_at'] ~= nil
+
+    local targets = {}
+    if not deleted then
+      for _, e in ipairs(expenseToTransactions(expense, currentUser['id'], accountCurrency, groupNames)) do
+        targets[e.role] = e
+      end
     end
+
+    local stored = state[expId] or {}
+    for _, role in ipairs(roles) do
+      local key = 'sw:' .. expId .. ':' .. role
+      local target = targets[role]
+
+      -- Was steht schon in MoneyMoney? LocalStorage ist die erste Quelle; kennt
+      -- MoneyMoney den Umsatz nicht (Konto neu angelegt), gilt er als neu.
+      local prev = stored[role]
+      if known then
+        local original = known(key)
+        if not original then
+          prev = nil
+        elseif not prev then
+          prev = recoverFromMoneyMoney(known, key, original, target, accountCurrency)
+        end
+      end
+
+      if not prev then
+        if target then
+          target.tx.transactionId = key
+          transactions[#transactions + 1] = target.tx
+          stored[role] = {
+            value       = target.value,
+            currency    = target.currency,
+            amount      = target.tx.amount,
+            corrections = 0,
+            name        = target.tx.name,
+            bookingText = target.tx.bookingText,
+            title       = trim(expense['description'] or ''),
+            date        = target.tx.bookingDate
+          }
+        end
+      else
+        local newValue = target and target.value or 0
+        local newCurrency = target and target.currency or prev.currency
+        local deltaAmount
+        if newCurrency == prev.currency then
+          local deltaValue = newValue - (prev.value or 0)
+          if math.abs(deltaValue) < 0.005 then
+            deltaAmount = 0
+          elseif newCurrency == accountCurrency then
+            deltaAmount = deltaValue
+          else
+            deltaAmount = convert(deltaValue, newCurrency, accountCurrency) or 0
+          end
+        else
+          deltaAmount = (target and target.tx.amount or 0) - (prev.amount or 0)
+        end
+
+        if math.abs(deltaAmount) >= 0.005 then
+          local tx, n = correction(key, prev, target, newValue, deltaAmount, expense, deleted)
+          tx.currency = accountCurrency
+          transactions[#transactions + 1] = tx
+          prev.amount = round2((prev.amount or 0) + tx.amount)
+          prev.corrections = n
+        end
+        prev.value = newValue
+        prev.currency = newCurrency
+        if target then
+          prev.name = target.tx.name
+          prev.bookingText = target.tx.bookingText
+          prev.date = target.tx.bookingDate
+        end
+        if trim(expense['description'] or '') ~= '' then prev.title = trim(expense['description']) end
+        stored[role] = prev
+      end
+    end
+    if next(stored) ~= nil then state[expId] = stored end
   end
 
-  -- MoneyMoney versteht "balance" als Saldo der gebuchten Umsätze und zählt
-  -- vorgemerkte selbst dazu (Anzeige "Vorgemerkt"). Ohne diesen Abzug wären
-  -- Start-, Tages- und Endsaldo um die vorgemerkten Beträge verschoben.
-  balance = balance - pending
-
-  -- pendingBalance (API-Feld "Summe der vorgemerkten Umsätze") meldet die
-  -- vorgemerkten Beträge zusätzlich, damit MoneyMoney sie im Kontostand zeigen kann.
   return {
-    balance        = math.floor(balance * 100 + 0.5) / 100,
-    pendingBalance = math.floor(pending * 100 + 0.5) / 100,
-    transactions   = transactions
+    balance      = round2(balance),
+    transactions = transactions
   }
 end
 

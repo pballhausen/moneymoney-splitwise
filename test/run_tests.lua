@@ -51,10 +51,9 @@ local fixtures = {
 
   expenses = {
     expenses = {
-      -- 1: Anna hat bezahlt, du schuldest deinen Anteil; vor 10 Tagen nachgetragen
-      -- (älter als die 7-Tage-Vormerkfrist → gebucht)
+      -- 1: Anna hat bezahlt, du schuldest deinen Anteil
       { id = 101, description = 'Olivenöl', cost = '72.0', currency_code = 'EUR',
-        date = '2025-03-10T18:30:00Z', created_at = isoDaysAgo(10),
+        date = '2025-03-10T18:30:00Z', created_at = '2025-03-10T18:31:00Z',
         payment = false, group_id = 55, category = { name = 'Lebensmittel' },
         users = { share(1, anna, '72.0', '18.0'), share(ME, self, '0.0', '18.0'),
                   share(2, ben, '0.0', '36.0') } },
@@ -91,7 +90,7 @@ local fixtures = {
         date = '2025-06-01T20:00:00Z', created_at = '2025-06-01T20:00:00Z',
         payment = false, category = { name = 'Restaurant' },
         users = { share(2, ben, '40.0', '20.0'), share(ME, self, '0.0', '20.0') } },
-      -- 9: frisch angelegt → vorgemerkt
+      -- 9: frisch angelegt → trotzdem sofort gebucht
       { id = 109, description = 'Taxi', cost = '20.0', currency_code = 'EUR',
         date = isoDaysAgo(1), created_at = isoDaysAgo(1),
         payment = false, category = { name = 'Taxi' },
@@ -116,7 +115,7 @@ local fixtures = {
   } } }
 }
 
-local ecbXml = [[
+ecbXml = [[
 <Cube time='2026-11-17'>
   <Cube currency='USD' rate='1.0800'/>
   <Cube currency='GBP' rate='0.8500'/>
@@ -129,6 +128,12 @@ local ecbXml = [[
 ProtocolWebBanking = 'ProtocolWebBanking'
 AccountTypeOther   = 'AccountTypeOther'
 LoginFailed        = 'LoginFailed'
+LocalStorage       = {}
+
+-- Simulierte MoneyMoney-Datenbank: gebuchte Umsätze nach transactionId, wie sie
+-- isKnownTransactionId nachschlägt
+local mmdb = {}
+local function isKnown (id) return mmdb[id] end
 
 local requests = {}
 local scenario = 'ok'
@@ -183,6 +188,18 @@ local function round (n)
   return math.floor(n * 100 + 0.5) / 100
 end
 
+local function sumDb ()
+  local sum = 0
+  for _, t in pairs(mmdb) do sum = sum + t.amount end
+  return round(sum)
+end
+
+local function expenseById (id)
+  for _, e in ipairs(fixtures.expenses.expenses) do
+    if e.id == id then return e end
+  end
+end
+
 local function contains (s, needle)
   return string.find(tostring(s), needle, 1, true) ~= nil
 end
@@ -229,19 +246,29 @@ check('Kontonummer wie alte Extension', accounts[1].accountNumber, 'philipp@exam
 check('Kontowährung = default_currency', accounts[1].currency, 'EUR')
 check('Inhaber', accounts[1].owner, 'Philipp Test')
 
-local result = RefreshAccount(accounts[1], 0)
+-- Abruf wie MoneyMoney: gelieferte Umsätze landen in der simulierten Datenbank
+local function refresh (withKnown)
+  local r = RefreshAccount(accounts[1], 0, withKnown ~= false and isKnown or nil)
+  if type(r) == 'table' then
+    for _, t in ipairs(r.transactions) do
+      if t.transactionId then mmdb[t.transactionId] = t end
+    end
+  end
+  return r
+end
+
+local result = refresh()
 local tx = result.transactions
 
--- Saldo aus get_friends: 12,50 − 7,25 + 20 USD / 1,08 = 23,77, davon −10 (Taxi)
--- vorgemerkt. MoneyMoney zählt Vorgemerktes selbst dazu → gebuchter Saldo 33,77.
-check('Saldo = gebuchter Teil (ohne vorgemerktes Taxi)', result.balance, 33.77)
-local pendingSum = 0
-for _, t in ipairs(result.transactions) do
-  if not t.booked then pendingSum = pendingSum + t.amount end
+-- Saldo aus get_friends: 12,50 − 7,25 + 20 USD / 1,08 = 23,77 (ohne Abzug, da
+-- nichts mehr vorgemerkt ist)
+check('Saldo = Splitwise-Gesamtsaldo', result.balance, 23.77)
+check('kein pendingBalance mehr', result.pendingBalance, nil)
+local allBooked = true
+for _, t in ipairs(tx) do
+  if t.booked ~= true then allBooked = false end
 end
-check('gebucht + vorgemerkt = Splitwise-Gesamtsaldo', round(result.balance + pendingSum), 23.77)
-check('pendingBalance = Summe der vorgemerkten Umsätze', result.pendingBalance, round(pendingSum))
-check('pendingBalance = vorgemerktes Taxi', result.pendingBalance, -10)
+check('alle Umsätze gebucht', allBooked, true)
 check('ganze Historie abgefragt', contains(requests[#requests - 1].url, 'get_expenses?limit=0')
   or contains(requests[#requests].url, 'get_expenses?limit=0'), true)
 
@@ -256,7 +283,7 @@ check('Kategorie als Buchungstext', oil and oil.bookingText, 'Lebensmittel')
 check('Verwendungszweck: Gesamt/Anteil', contains(oil and oil.purpose,
   'Gesamt 72,00 EUR · bezahlt von Anna Alpha · dein Anteil 18,00 EUR'), true)
 check('Verwendungszweck: Gruppe', contains(oil and oil.purpose, 'Gruppe: Sizilien'), true)
-check('vor 10 Tagen angelegt: gebucht (Frist 7 Tage)', oil and oil.booked, true)
+check('Kennung Anteil', oil and oil.transactionId, 'sw:101:anteil')
 check('Umsatzwährung = Kontowährung', oil and oil.currency, 'EUR')
 check('andere zahlen: keine Zahlung', byPurpose(tx, 'Olivenöl', 'Zahlung'), nil)
 
@@ -269,6 +296,7 @@ check('du zahlst: Name "Du"', dinner and dinner.name, 'Du')
 check('Tausenderpunkt, "bezahlt von dir"', contains(dinner and dinner.purpose,
   'Gesamt 1.234,50 EUR · bezahlt von dir · dein Anteil 617,25 EUR'), true)
 check('du zahlst: Zahlung = gezahlter Betrag', dinnerPay and dinnerPay.amount, 1234.5)
+check('Kennung Zahlung', dinnerPay and dinnerPay.transactionId, 'sw:102:zahlung')
 check('Zahlung: Zweck nennt Mitzahler', contains(dinnerPay and dinnerPay.purpose,
   'Von dir bezahlt: 1.234,50 EUR (Gesamt 1.234,50 EUR) · geteilt mit Ben'), true)
 check('Ausgabe + Zahlung = Saldoänderung', dinner.amount + dinnerPay.amount, 617.25)
@@ -291,6 +319,7 @@ check('Anteil 0: Zahlung +240', advance and advance.amount, 240)
 local fromAnna = byPurpose(tx, 'Zahlung von Anna Alpha')
 check('Zahlung erhalten: negativ', fromAnna and fromAnna.amount, -30)
 check('Zahlung: Buchungstext', fromAnna and fromAnna.bookingText, 'Ausgleichszahlung')
+check('Kennung Ausgleichszahlung', fromAnna and fromAnna.transactionId, 'sw:103:ausgleich')
 
 local toBen = byPurpose(tx, 'Zahlung an Ben')
 check('Zahlung geleistet: positiv', toBen and toBen.amount, 7.25)
@@ -301,11 +330,105 @@ check('USD in EUR umgerechnet (−20 / 1,08)', round(usd and usd.amount), -18.52
 check('USD: Originalbetrag im Zweck', contains(usd and usd.purpose, 'Originalbetrag -20,00 USD'), true)
 
 local taxi = byPurpose(tx, 'Taxi')
-check('frische Ausgabe vorgemerkt', taxi and taxi.booked, false)
+check('frische Ausgabe sofort gebucht', taxi and taxi.booked, true)
 
 local market = byPurpose(tx, 'Markt')
 check('unbekannter Kurs: Betrag 0', market and market.amount, 0)
 check('unbekannter Kurs: Hinweis im Zweck', contains(market and market.purpose, 'kein EZB-Kurs'), true)
+
+-- Summe aller Umsätze: −18 + 617,25 − 30 + 7,25 + 0 − 18,52 − 10 + 240 + 0
+check('Summe in MoneyMoney nach erstem Abruf', sumDb(), 787.98)
+
+-- --------------------------------------------------------------------------
+-- Änderungen in Splitwise → Korrekturbuchungen
+-- --------------------------------------------------------------------------
+
+check('zweiter Abruf ohne Änderung: keine Umsätze', #refresh().transactions, 0)
+
+-- Neuer EZB-Kurs: bereits gebuchte Fremdwährung bleibt, keine Korrektur
+InitializeSession(ProtocolWebBanking, 'Splitwise', KEY, '', '')
+local oldEcb = ecbXml
+ecbXml = string.gsub(ecbXml, '1%.0800', '1.2500')
+check('neuer Wechselkurs: keine Korrektur', #refresh().transactions, 0)
+ecbXml = oldEcb
+InitializeSession(ProtocolWebBanking, 'Splitwise', KEY, '', '')
+
+-- Olivenöl: dein Anteil 18 → 15; Taxi gelöscht; Abschlag jetzt von Ben bezahlt
+local oilE = expenseById(101)
+oilE.users = { share(1, anna, '72.0', '21.0'), share(ME, self, '0.0', '15.0'),
+               share(2, ben, '0.0', '36.0') }
+oilE.updated_at = '2026-11-20T08:00:00Z'
+local taxiE = expenseById(109)
+taxiE.deleted_at = '2026-11-21T09:00:00Z'
+local advE = expenseById(111)
+advE.users = { share(2, ben, '240.0', '240.0'), share(ME, self, '0.0', '0.0') }
+advE.updated_at = '2026-11-20T08:00:00Z'
+
+local changes = refresh().transactions
+check('drei Korrekturen', #changes, 3)
+
+local oilK = byPurpose(changes, 'Korrektur: Olivenöl')
+check('Korrektur: Differenz +3', oilK and oilK.amount, 3)
+check('Korrektur: Name wie Original', oilK and oilK.name, 'Anna Alpha')
+check('Korrektur: Kategorie wie Original', oilK and oilK.bookingText, 'Lebensmittel')
+check('Korrektur: gebucht', oilK and oilK.booked, true)
+check('Korrektur: Kennung', oilK and oilK.transactionId, 'sw:101:anteil:k1')
+check('Korrektur: Datum = Änderung in Splitwise', oilK and oilK.bookingDate, 1795161600)
+check('Korrektur: vorher/jetzt im Zweck', contains(oilK and oilK.purpose,
+  'vorher -18,00 EUR, jetzt -15,00 EUR'), true)
+check('Korrektur: Datum der Ausgabe im Zweck', contains(oilK and oilK.purpose, 'Ausgabe vom 10.03.2025'), true)
+
+local taxiS = byPurpose(changes, 'Storno: Taxi')
+check('Storno: Gegenbuchung +10', taxiS and taxiS.amount, 10)
+check('Storno: Kategorie wie Original', taxiS and taxiS.bookingText, 'Taxi')
+check('Storno: Name wie Original', taxiS and taxiS.name, 'Anna Alpha')
+check('Storno: Datum = Löschung', taxiS and taxiS.bookingDate, 1795251600)
+check('Storno: Kennung', taxiS and taxiS.transactionId, 'sw:109:anteil:k1')
+
+local advK = byPurpose(changes, 'Korrektur: Abschlag')
+check('Rolle entfällt: Korrektur −240', advK and advK.amount, -240)
+check('Rolle entfällt: Buchungstext Zahlung', advK and advK.bookingText, 'Zahlung')
+check('Rolle entfällt: jetzt 0', contains(advK and advK.purpose, 'jetzt 0,00 EUR'), true)
+
+-- 787,98 + 3 + 10 − 240
+check('Summe nach Korrekturen', sumDb(), 560.98)
+check('nach Korrektur: nächster Abruf ohne Umsätze', #refresh().transactions, 0)
+
+-- Zweite Änderung derselben Ausgabe → zweite Korrektur
+oilE.users[2] = share(ME, self, '0.0', '12.0')
+local again = refresh().transactions
+check('zweite Änderung: eine Korrektur', #again, 1)
+check('zweite Änderung: Kennung k2', again[1] and again[1].transactionId, 'sw:101:anteil:k2')
+check('zweite Änderung: vorher -15', contains(again[1] and again[1].purpose,
+  'vorher -15,00 EUR, jetzt -12,00 EUR'), true)
+
+-- LocalStorage leer (Bankzugang neu eingerichtet), MoneyMoney hat alles:
+-- Stand wird über isKnownTransactionId rekonstruiert, nichts doppelt
+LocalStorage = {}
+check('Speicher leer: nichts doppelt', #refresh().transactions, 0)
+oilE.users[2] = share(ME, self, '0.0', '10.0')
+local afterReset = refresh().transactions
+check('Speicher leer: Korrektur zählt weiter (k3)', afterReset[1] and afterReset[1].transactionId,
+  'sw:101:anteil:k3')
+check('Speicher leer: Differenz aus MoneyMoney-Stand', afterReset[1] and afterReset[1].amount, 2)
+-- 560,98 + 3 + 2
+check('Summe nach Rekonstruktion', sumDb(), 565.98)
+
+-- Ohne isKnownTransactionId: nur LocalStorage, ebenfalls nichts doppelt
+check('ohne isKnownTransactionId: nichts doppelt', #refresh(false).transactions, 0)
+
+-- Konto in MoneyMoney neu angelegt, LocalStorage noch voll: alles neu, ohne Korrekturen
+mmdb = {}
+local fresh = refresh().transactions
+local hasCorrection = false
+for _, t in ipairs(fresh) do
+  if contains(t.purpose, 'Korrektur') or contains(t.purpose, 'Storno') then hasCorrection = true end
+end
+check('neues Konto: neun Umsätze', #fresh, 9)
+check('neues Konto: keine Korrekturen', hasCorrection, false)
+check('neues Konto: Summe = aktueller Stand', sumDb(), 565.98)
+local freshOil = byPurpose(fresh, 'Olivenöl')
+check('neues Konto: Olivenöl mit aktuellem Anteil', freshOil and freshOil.amount, -10)
 
 -- 401: abgelaufener/falscher Key → LoginFailed (MoneyMoney pausiert dann den Abruf)
 scenario = 'unauthorized'
