@@ -8,13 +8,19 @@ github.com/slauber/moneymoney-splitwise (2022, MIT). Aufbau analog zu ../moneymo
 - Konto (`AccountTypeOther`) statt Depot — Wunsch des Nutzers: in MoneyMoney zählt, wofür das
   Geld ausgegeben wurde, nicht wem man es schuldet.
 - Umsätze je Ausgabe, Summe immer = eigenes `net_balance` (paid − owed):
-  andere zahlen → ein Umsatz −owed_share (Name = Zahler, Buchungstext = Kategorie);
-  ich zahle → ZWEI Umsätze: −owed_share (Kategorie) und +paid_share ("Zahlung", Name "Du"),
+  andere zahlen → ein Umsatz −owed_share (Buchungstext = Kategorie);
+  ich zahle → ZWEI Umsätze: −owed_share (Kategorie) und +paid_share (Buchungstext "Zahlung"),
   Wunsch des Nutzers: Zahlung matcht die Bankabbuchung, Anteil ist kategorisierbare Ausgabe
   (vorher ein Umsatz +net → wirkte wie Einnahme). Anteil 0 → nur Zahlung.
   Ausgleichszahlung (payment=true) → ein Umsatz über net_balance.
 - Saldo aus get_friends, Umsätze aus `get_expenses?limit=0` (ganze Historie), Gruppennamen aus
   get_groups. Buchungstext = Splitwise-Kategorie. Datum per eigener UTC-Umrechnung (parseIsoUtc).
+- Darstellung (seit 23.11.2026, Wunsch des Nutzers: fette Zeile soll sagen, WOFÜR):
+  Name = Splitwise-Beschreibung; Zweck einzeilig, Wichtigstes vorn (MoneyMoney kürzt hinten):
+  "Gruppe · bezahlt von X · Gesamt …" bzw. "Gruppe · dein Anteil · Gesamt …, bezahlt von dir"
+  bzw. "Gruppe · deine Zahlung · geteilt mit …". Ausgleich: Name "Ausgleich an/von X".
+  Korrekturen: gleicher Name, Zweck "Gruppe · Korrektur <n> · …" / "Storno (Korrektur <n>) · …".
+  Vorher: Name = Zahler bzw. "Du", Beschreibung im Zweck.
 - ALLES sofort gebucht (seit 22.11.2026), balance = voller Splitwise-Saldo. Grund: Nutzer will
   den Gesamtsaldo in der Seitenleiste; die zeigt nur den gebuchten Saldo. Gescheitert (vom
   Nutzer in MoneyMoney geprüft): pendingBalance als Summe der vorgemerkten, pendingBalance als
@@ -36,7 +42,9 @@ github.com/slauber/moneymoney-splitwise (2022, MIT). Aufbau analog zu ../moneymo
 - Fehlerbehandlung: Accept JSON, 401 → LoginFailed, 403 ohne Pro → Klartext.
   API-Key aus username ODER password (erstes Feld ≥30 Zeichen ohne Leerzeichen).
   accountNumber weiter "email (id)".
-- Offline-Tests: `lua test/run_tests.lua` (95 Tests, grün, inkl. Korrekturen/Storno/Rekonstruktion).
+- Offline-Tests: `lua test/run_tests.lua` (92 Tests, grün, inkl. Korrekturen/Storno/Rekonstruktion).
+- Live (23.11.2026, neue Darstellung): 167 Umsätze, Summe −360,86 EUR = balance; zweiter Abruf
+  und Abruf mit leerem LocalStorage liefern 0 Umsätze.
 - Live (22.11.2026, curl-Harness): 159 Umsätze, Summe −337,06 EUR = balance → Startsaldo 0;
   zweiter Abruf und Abruf mit leerem LocalStorage liefern 0 Umsätze. 183 Ausgaben, davon 3
   gelöscht, 32 nachträglich geändert (updated_at > created_at).
@@ -53,6 +61,8 @@ github.com/slauber/moneymoney-splitwise (2022, MIT). Aufbau analog zu ../moneymo
 3. Neues Modell (alles gebucht + Korrekturen) in MoneyMoney prüfen: Konto löschen und neu
    anlegen (Typ wieder Sonstiges), Seitenleiste = Splitwise-Saldo, Startsaldo 0; nach einer
    Änderung in Splitwise erscheint genau eine Korrekturbuchung.
+4. Neue Darstellung (Name = Beschreibung) in MoneyMoney prüfen — erfordert ebenfalls Konto
+   löschen und neu anlegen. MoneyMoney-Regeln, die auf Personennamen prüften, greifen nicht mehr.
 
 ## Regeln
 - Den API-Key nie committen (`.env` ist ignoriert).

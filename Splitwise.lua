@@ -10,6 +10,10 @@
 -- Die Summe aller Umsätze ist dein Splitwise-Saldo (positiv = man schuldet dir
 -- etwas, negativ = du schuldest anderen etwas).
 --
+-- Darstellung: Name (fett in MoneyMoney) = Splitwise-Beschreibung ("Benzin"),
+-- Verwendungszweck = Gruppe · Rolle bzw. Zahler · Details, Buchungstext = Kategorie.
+-- Ausgleichszahlungen heißen "Ausgleich an/von <Name>".
+--
 -- Neufassung auf Basis von https://github.com/slauber/moneymoney-splitwise
 -- (Copyright (c) 2022 Sebastian Lauber, MIT-Lizenz, siehe LICENSE).
 --
@@ -245,11 +249,15 @@ local function expenseToTransactions (expense, myId, accountCurrency, groupNames
 
   local transactions = {}
 
-  local function add (role, name, value, bookingText, lines)
+  -- Name (fett in MoneyMoney) = wofür; Zweck = eine Zeile, Wichtigstes zuerst
+  -- (MoneyMoney kürzt hinten): Gruppe · Rolle/Zahler · Details.
+  local function add (role, name, value, bookingText, parts)
     if math.abs(value) < 0.005 then return end
     local purpose = {}
-    for _, l in ipairs(lines) do purpose[#purpose + 1] = l end
-    if group then purpose[#purpose + 1] = 'Gruppe: ' .. group end
+    if group then purpose[#purpose + 1] = group end
+    for _, p in ipairs(parts) do
+      if p and p ~= '' then purpose[#purpose + 1] = p end
+    end
 
     local amount = convert(value, currency, accountCurrency)
     if currency ~= accountCurrency then
@@ -275,7 +283,7 @@ local function expenseToTransactions (expense, myId, accountCurrency, groupNames
         currency    = accountCurrency,
         bookingDate = date,
         valueDate   = date,
-        purpose     = table.concat(purpose, '\n'),
+        purpose     = table.concat(purpose, ' · '),
         bookingText = bookingText,
         booked      = true
       }
@@ -284,30 +292,29 @@ local function expenseToTransactions (expense, myId, accountCurrency, groupNames
 
   if expense['payment'] == true then
     if net > 0 then
-      local name = joinNames(others)
-      add('ausgleich', name, net, 'Ausgleichszahlung', { 'Zahlung an ' .. name })
+      add('ausgleich', 'Ausgleich an ' .. joinNames(others), net, 'Ausgleichszahlung',
+        { 'Ausgleichszahlung' })
     else
-      local name = joinNames(payers)
-      add('ausgleich', name, net, 'Ausgleichszahlung', { 'Zahlung von ' .. name })
+      add('ausgleich', 'Ausgleich von ' .. joinNames(payers), net, 'Ausgleichszahlung',
+        { 'Ausgleichszahlung' })
     end
     return transactions
   end
 
   local category = expense['category'] and expense['category']['name'] or 'Ausgabe'
-  local total = formatAmount(tonumber(expense['cost']) or 0) .. ' ' .. currency
+  local total = 'Gesamt ' .. formatAmount(tonumber(expense['cost']) or 0) .. ' ' .. currency
+  if description == '' then description = category end
 
   if myPaid > 0 then
     local paidBy = #payers > 0 and ('dir und ' .. joinNames(payers)) or 'dir'
-    add('anteil', 'Du', -myShare, category, { description,
-      string.format('Gesamt %s · bezahlt von %s · dein Anteil %s %s',
-        total, paidBy, formatAmount(myShare), currency) })
-    add('zahlung', 'Du', myPaid, 'Zahlung', { description,
-      string.format('Von dir bezahlt: %s %s (Gesamt %s) · geteilt mit %s',
-        formatAmount(myPaid), currency, total, joinNames(others)) })
+    local sharedWith = joinNames(others)
+    add('anteil', description, -myShare, category,
+      { 'dein Anteil', total .. ', bezahlt von ' .. paidBy })
+    add('zahlung', description, myPaid, 'Zahlung',
+      { 'deine Zahlung', sharedWith ~= '' and ('geteilt mit ' .. sharedWith) or nil })
   else
-    add('anteil', joinNames(payers), -myShare, category, { description,
-      string.format('Gesamt %s · bezahlt von %s · dein Anteil %s %s',
-        total, joinNames(payers), formatAmount(myShare), currency) })
+    add('anteil', description, -myShare, category,
+      { 'bezahlt von ' .. joinNames(payers), total })
   end
 
   return transactions
@@ -409,33 +416,36 @@ local function recoverFromMoneyMoney (known, key, original, target, accountCurre
 end
 
 -- Korrekturbuchung über die Differenz zwischen gebuchtem Stand und Splitwise.
-local function correction (key, prev, target, newValue, deltaAmount, expense, deleted)
+-- Name wie das Original; Zweck: Gruppe · Korrektur <n> · was sich geändert hat.
+-- "Korrektur <n>" muss im Zweck stehen, sonst hält MoneyMoney zwei gleich hohe
+-- Korrekturen am selben Tag für Dubletten.
+local function correction (key, prev, target, newValue, deltaAmount, expense, deleted, groupNames)
   local n = (prev.corrections or 0) + 1
   local when = deleted and parseIsoUtc(expense['deleted_at'])
             or parseIsoUtc(expense['updated_at']) or os.time()
-  local title = trim(expense['description'] or '') ~= '' and trim(expense['description']) or prev.title or 'Ausgabe'
   local currency = target and target.currency or prev.currency
 
-  local lines
+  local parts = {}
+  local group = groupNames[expense['group_id']]
+  if group then parts[#parts + 1] = group end
   if deleted then
-    lines = { 'Storno: ' .. title,
-      string.format('In Splitwise gelöscht · Ausgabe vom %s über %s %s',
-        formatDate(prev.date), formatAmount(prev.value), prev.currency) }
+    parts[#parts + 1] = 'Storno (Korrektur ' .. n .. ')'
+    parts[#parts + 1] = string.format('in Splitwise gelöscht · Ausgabe vom %s über %s %s',
+      formatDate(prev.date), formatAmount(prev.value), prev.currency)
   else
-    lines = { 'Korrektur: ' .. title,
-      string.format('In Splitwise geändert · Ausgabe vom %s · vorher %s %s, jetzt %s %s',
-        formatDate(target and target.tx.bookingDate or prev.date),
-        formatAmount(prev.value), prev.currency, formatAmount(newValue), currency) }
+    parts[#parts + 1] = 'Korrektur ' .. n
+    parts[#parts + 1] = string.format('in Splitwise geändert · Ausgabe vom %s · vorher %s %s, jetzt %s %s',
+      formatDate(target and target.tx.bookingDate or prev.date),
+      formatAmount(prev.value), prev.currency, formatAmount(newValue), currency)
   end
-  lines[#lines + 1] = 'Korrektur ' .. n
 
   return {
-    name          = target and target.tx.name or prev.name or 'Splitwise',
+    name          = target and target.tx.name or prev.name or prev.title or 'Splitwise',
     amount        = round2(deltaAmount),
     currency      = nil,  -- wird vom Aufrufer gesetzt
     bookingDate   = when,
     valueDate     = when,
-    purpose       = table.concat(lines, '\n'),
+    purpose       = table.concat(parts, ' · '),
     bookingText   = target and target.tx.bookingText or prev.bookingText,
     booked        = true,
     transactionId = key .. ':k' .. n
@@ -531,7 +541,7 @@ function RefreshAccount (account, since, isKnownTransactionId)
         end
 
         if math.abs(deltaAmount) >= 0.005 then
-          local tx, n = correction(key, prev, target, newValue, deltaAmount, expense, deleted)
+          local tx, n = correction(key, prev, target, newValue, deltaAmount, expense, deleted, groupNames)
           tx.currency = accountCurrency
           transactions[#transactions + 1] = tx
           prev.amount = round2((prev.amount or 0) + tx.amount)

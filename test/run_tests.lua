@@ -204,11 +204,11 @@ local function contains (s, needle)
   return string.find(tostring(s), needle, 1, true) ~= nil
 end
 
--- Umsatz anhand der ersten Zeile des Verwendungszwecks (und optional des
--- Buchungstexts) finden
-local function byPurpose (transactions, firstLine, bookingText)
+-- Umsatz anhand des Namens (= Splitwise-Beschreibung) und optional des
+-- Buchungstexts finden
+local function byName (transactions, name, bookingText)
   for _, t in ipairs(transactions) do
-    if string.match(t.purpose or '', '^[^\n]*') == firstLine
+    if t.name == name
        and (bookingText == nil or t.bookingText == bookingText) then return t end
   end
 end
@@ -273,66 +273,63 @@ check('ganze Historie abgefragt', contains(requests[#requests - 1].url, 'get_exp
   or contains(requests[#requests].url, 'get_expenses?limit=0'), true)
 
 check('elf Umsätze (gelöscht, fremd ausgelassen; selbst bezahlte doppelt)', #tx, 11)
-check('gelöschte Ausgabe fehlt', byPurpose(tx, 'Gelöscht'), nil)
-check('fremde Ausgabe fehlt', byPurpose(tx, 'Fremd'), nil)
+check('gelöschte Ausgabe fehlt', byName(tx, 'Gelöscht'), nil)
+check('fremde Ausgabe fehlt', byName(tx, 'Fremd'), nil)
 
-local oil = byPurpose(tx, 'Olivenöl')
+local oil = byName(tx, 'Olivenöl')
 check('andere zahlen: minus dein Anteil', oil and oil.amount, -18)
-check('andere zahlen: Name = wer bezahlt hat', oil and oil.name, 'Anna Alpha')
 check('Kategorie als Buchungstext', oil and oil.bookingText, 'Lebensmittel')
-check('Verwendungszweck: Gesamt/Anteil', contains(oil and oil.purpose,
-  'Gesamt 72,00 EUR · bezahlt von Anna Alpha · dein Anteil 18,00 EUR'), true)
-check('Verwendungszweck: Gruppe', contains(oil and oil.purpose, 'Gruppe: Sizilien'), true)
+check('andere zahlen: Zweck = Gruppe · Zahler · Gesamt', oil and oil.purpose,
+  'Sizilien · bezahlt von Anna Alpha · Gesamt 72,00 EUR')
+check('Zweck einzeilig', contains(oil and oil.purpose, '\n'), false)
 check('Kennung Anteil', oil and oil.transactionId, 'sw:101:anteil')
 check('Umsatzwährung = Kontowährung', oil and oil.currency, 'EUR')
-check('andere zahlen: keine Zahlung', byPurpose(tx, 'Olivenöl', 'Zahlung'), nil)
+check('andere zahlen: keine Zahlung', byName(tx, 'Olivenöl', 'Zahlung'), nil)
 
 -- Du zahlst 1.234,50, ihr teilt 50/50: Ausgabe −617,25 + Zahlung +1.234,50 = +617,25
-local dinner = byPurpose(tx, 'Restaurant', 'Restaurant')
-local dinnerPay = byPurpose(tx, 'Restaurant', 'Zahlung')
+local dinner = byName(tx, 'Restaurant', 'Restaurant')
+local dinnerPay = byName(tx, 'Restaurant', 'Zahlung')
 check('du zahlst: Ausgabe = minus dein Anteil', dinner and dinner.amount, -617.25)
 check('du zahlst: Ausgabe mit Kategorie', dinner and dinner.bookingText, 'Restaurant')
-check('du zahlst: Name "Du"', dinner and dinner.name, 'Du')
-check('Tausenderpunkt, "bezahlt von dir"', contains(dinner and dinner.purpose,
-  'Gesamt 1.234,50 EUR · bezahlt von dir · dein Anteil 617,25 EUR'), true)
+check('du zahlst: Anteil-Zweck (ohne Gruppe, Tausenderpunkt)', dinner and dinner.purpose,
+  'dein Anteil · Gesamt 1.234,50 EUR, bezahlt von dir')
 check('du zahlst: Zahlung = gezahlter Betrag', dinnerPay and dinnerPay.amount, 1234.5)
 check('Kennung Zahlung', dinnerPay and dinnerPay.transactionId, 'sw:102:zahlung')
-check('Zahlung: Zweck nennt Mitzahler', contains(dinnerPay and dinnerPay.purpose,
-  'Von dir bezahlt: 1.234,50 EUR (Gesamt 1.234,50 EUR) · geteilt mit Ben'), true)
+check('Zahlung: Zweck nennt, mit wem geteilt', dinnerPay and dinnerPay.purpose,
+  'deine Zahlung · geteilt mit Ben')
 check('Ausgabe + Zahlung = Saldoänderung', dinner.amount + dinnerPay.amount, 617.25)
 check('Buchungsdatum UTC (2024-02-29 12:00Z)', dinner and dinner.bookingDate, 1709208000)
 check('Zahlung gleiches Datum', dinnerPay and dinnerPay.bookingDate, 1709208000)
-check('ohne Gruppe keine Gruppenzeile', contains(dinner and dinner.purpose, 'Gruppe:'), false)
 
 -- Genau deinen Anteil bezahlt: Saldo unverändert, Ausgabe trotzdem sichtbar
-local neutral = byPurpose(tx, 'Neutral', 'Ausgabe')
-local neutralPay = byPurpose(tx, 'Neutral', 'Zahlung')
+local neutral = byName(tx, 'Neutral', 'Ausgabe')
+local neutralPay = byName(tx, 'Neutral', 'Zahlung')
 check('eigener Anteil selbst bezahlt: Ausgabe −5', neutral and neutral.amount, -5)
 check('eigener Anteil selbst bezahlt: Zahlung +5', neutralPay and neutralPay.amount, 5)
 check('mehrere Zahler im Zweck', contains(neutral and neutral.purpose, 'bezahlt von dir und Anna Alpha'), true)
 
 -- Anteil 0 (Vorschuss): nur die Zahlung, keine 0-€-Ausgabe
-check('Anteil 0: keine Ausgabe', byPurpose(tx, 'Abschlag', 'Allgemein'), nil)
-local advance = byPurpose(tx, 'Abschlag', 'Zahlung')
+check('Anteil 0: keine Ausgabe', byName(tx, 'Abschlag', 'Allgemein'), nil)
+local advance = byName(tx, 'Abschlag', 'Zahlung')
 check('Anteil 0: Zahlung +240', advance and advance.amount, 240)
 
-local fromAnna = byPurpose(tx, 'Zahlung von Anna Alpha')
+local fromAnna = byName(tx, 'Ausgleich von Anna Alpha')
 check('Zahlung erhalten: negativ', fromAnna and fromAnna.amount, -30)
 check('Zahlung: Buchungstext', fromAnna and fromAnna.bookingText, 'Ausgleichszahlung')
 check('Kennung Ausgleichszahlung', fromAnna and fromAnna.transactionId, 'sw:103:ausgleich')
 
-local toBen = byPurpose(tx, 'Zahlung an Ben')
+local toBen = byName(tx, 'Ausgleich an Ben')
 check('Zahlung geleistet: positiv', toBen and toBen.amount, 7.25)
-check('Zahlung geleistet: Name', toBen and toBen.name, 'Ben')
+check('Ausgleich: Zweck', toBen and toBen.purpose, 'Ausgleichszahlung')
 
-local usd = byPurpose(tx, 'Diner')
+local usd = byName(tx, 'Diner')
 check('USD in EUR umgerechnet (−20 / 1,08)', round(usd and usd.amount), -18.52)
 check('USD: Originalbetrag im Zweck', contains(usd and usd.purpose, 'Originalbetrag -20,00 USD'), true)
 
-local taxi = byPurpose(tx, 'Taxi')
+local taxi = byName(tx, 'Taxi')
 check('frische Ausgabe sofort gebucht', taxi and taxi.booked, true)
 
-local market = byPurpose(tx, 'Markt')
+local market = byName(tx, 'Markt')
 check('unbekannter Kurs: Betrag 0', market and market.amount, 0)
 check('unbekannter Kurs: Hinweis im Zweck', contains(market and market.purpose, 'kein EZB-Kurs'), true)
 
@@ -367,9 +364,10 @@ advE.updated_at = '2026-11-20T08:00:00Z'
 local changes = refresh().transactions
 check('drei Korrekturen', #changes, 3)
 
-local oilK = byPurpose(changes, 'Korrektur: Olivenöl')
+local oilK = byName(changes, 'Olivenöl')
 check('Korrektur: Differenz +3', oilK and oilK.amount, 3)
-check('Korrektur: Name wie Original', oilK and oilK.name, 'Anna Alpha')
+check('Korrektur: Zweck beginnt mit Gruppe · Korrektur 1', contains(oilK and oilK.purpose,
+  'Sizilien · Korrektur 1 · in Splitwise geändert'), true)
 check('Korrektur: Kategorie wie Original', oilK and oilK.bookingText, 'Lebensmittel')
 check('Korrektur: gebucht', oilK and oilK.booked, true)
 check('Korrektur: Kennung', oilK and oilK.transactionId, 'sw:101:anteil:k1')
@@ -378,14 +376,15 @@ check('Korrektur: vorher/jetzt im Zweck', contains(oilK and oilK.purpose,
   'vorher -18,00 EUR, jetzt -15,00 EUR'), true)
 check('Korrektur: Datum der Ausgabe im Zweck', contains(oilK and oilK.purpose, 'Ausgabe vom 10.03.2025'), true)
 
-local taxiS = byPurpose(changes, 'Storno: Taxi')
+local taxiS = byName(changes, 'Taxi')
 check('Storno: Gegenbuchung +10', taxiS and taxiS.amount, 10)
 check('Storno: Kategorie wie Original', taxiS and taxiS.bookingText, 'Taxi')
-check('Storno: Name wie Original', taxiS and taxiS.name, 'Anna Alpha')
+check('Storno: Zweck', contains(taxiS and taxiS.purpose,
+  'Storno (Korrektur 1) · in Splitwise gelöscht'), true)
 check('Storno: Datum = Löschung', taxiS and taxiS.bookingDate, 1795251600)
 check('Storno: Kennung', taxiS and taxiS.transactionId, 'sw:109:anteil:k1')
 
-local advK = byPurpose(changes, 'Korrektur: Abschlag')
+local advK = byName(changes, 'Abschlag')
 check('Rolle entfällt: Korrektur −240', advK and advK.amount, -240)
 check('Rolle entfällt: Buchungstext Zahlung', advK and advK.bookingText, 'Zahlung')
 check('Rolle entfällt: jetzt 0', contains(advK and advK.purpose, 'jetzt 0,00 EUR'), true)
@@ -427,7 +426,7 @@ end
 check('neues Konto: neun Umsätze', #fresh, 9)
 check('neues Konto: keine Korrekturen', hasCorrection, false)
 check('neues Konto: Summe = aktueller Stand', sumDb(), 565.98)
-local freshOil = byPurpose(fresh, 'Olivenöl')
+local freshOil = byName(fresh, 'Olivenöl')
 check('neues Konto: Olivenöl mit aktuellem Anteil', freshOil and freshOil.amount, -10)
 
 -- 401: abgelaufener/falscher Key → LoginFailed (MoneyMoney pausiert dann den Abruf)
