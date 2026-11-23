@@ -61,8 +61,8 @@ github.com/slauber/moneymoney-splitwise (2022, MIT). Aufbau analog zu ../moneymo
 3. Neues Modell (alles gebucht + Korrekturen) in MoneyMoney prüfen: Konto löschen und neu
    anlegen (Typ wieder Sonstiges), Seitenleiste = Splitwise-Saldo, Startsaldo 0; nach einer
    Änderung in Splitwise erscheint genau eine Korrekturbuchung.
-4. Neue Darstellung (Name = Beschreibung) in MoneyMoney prüfen — erfordert ebenfalls Konto
-   löschen und neu anlegen. MoneyMoney-Regeln, die auf Personennamen prüften, greifen nicht mehr.
+4. (erledigt 23.11.2026) Neue Darstellung (Name = Beschreibung) vom Nutzer in MoneyMoney
+   geprüft und für gut befunden; Tagessalden −337,06 / −360,86 EUR wie erwartet.
 
 ## Regeln
 - Den API-Key nie committen (`.env` ist ignoriert).
